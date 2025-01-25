@@ -36,7 +36,7 @@ export default function Dashboard() {
     <div className="min-h-screen text-white overflow-hidden">
       {/* Dark blue background for the dashboard to create a professional and calm atmosphere */}
       <NetworkBackground
-        color="rgb(75, 31, 31)"
+        color="rgb(31, 39, 75)"
         nodeColor="rgba(255, 255, 255, 0.4)"
         lineColor="rgba(255, 255, 255, 0.15)"
       />
