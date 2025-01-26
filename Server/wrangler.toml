@@ -11,10 +11,16 @@ database_name = "watchdog-db"
 database_id = "a1c45883-36c7-44d8-bc50-a6d375bc2ca5"
 
 [vars]
+AWS_ACCESS_KEY_ID = "ac23b281dd29f382c17c9d359ed19412"
+AWS_SECRET_ACCESS_KEY = "fdb4cd822527c33b876245fc56e5535fd66850e8972fc8abf5504b012f728308"
 GOOGLE_CLOUD_TOKEN = "watchdog-448922-18cc0d7398a2.json"
 
 [observability.logs]
 enabled = true
+
+[[r2_buckets]]
+binding = "MY_R2"
+bucket_name = "watchdog-incident-reports"
 
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"

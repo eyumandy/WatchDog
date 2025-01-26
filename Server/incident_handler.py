@@ -1,123 +1,158 @@
 """
-incident_handler.py - Handles incident reporting and video caching for security events.
+incident_handler.py - Handles incident recording and worker-based uploading
 """
 
 import cv2
 import os
-import json
-import asyncio
-from datetime import datetime
-from collections import deque
 import numpy as np
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from collections import deque
+import asyncio
+import aiohttp
+from typing import Optional, Dict, Any
+from datetime import datetime
+from rich.console import Console
 
-@dataclass
-class IncidentReport:
-    incident_id: str
-    timestamp: str
-    threat_level: str
-    violence_probability: float
-    detected_objects: List[str]
-    video_path: str
-    analysis_data: Dict[str, Any]
+console = Console()
 
 class IncidentHandler:
     def __init__(self, 
                  save_dir: str,
-                 pre_incident_frames: int = 150,  # 5 seconds at 30fps
-                 post_incident_frames: int = 300,  # 10 seconds at 30fps
-                 cooldown_frames: int = 450):     # 15 seconds at 30fps
-        self.save_dir = save_dir
-        self.pre_incident_frames = pre_incident_frames
-        self.post_incident_frames = post_incident_frames
-        self.cooldown_frames = cooldown_frames
+                 r2_endpoint: str,
+                 access_key_id: str,
+                 access_key_secret: str,
+                 bucket_name: str,
+                 fps: int = 30):
+        self.presign_url_endpoint = f"{r2_endpoint}/get-presigned-url"
+        self.access_key_id = access_key_id
+        self.access_key_secret = access_key_secret
+        self.bucket_name = bucket_name
+        self.fps = fps
         
-        # Frame buffer and state
-        self.frame_buffer = deque(maxlen=pre_incident_frames)
-        self.post_incident_buffer = []
+        self.pre_frames = 5 * fps  # 5 seconds pre-incident
+        self.post_frames = 10 * fps  # 10 seconds post-incident
+        
+        self.pre_buffer = deque(maxlen=self.pre_frames)
+        self.post_buffer = []
         self.recording = False
-        self.frames_since_incident = 0
         self.current_incident = None
         
-        # Ensure directories exist
-        self.video_dir = os.path.join(save_dir, "incidents")
-        os.makedirs(self.video_dir, exist_ok=True)
-        
     def add_frame(self, frame: np.ndarray) -> None:
-        """Add frame to buffer."""
-        self.frame_buffer.append(frame.copy())
-        
         if self.recording:
-            self.post_incident_buffer.append(frame.copy())
-            if len(self.post_incident_buffer) >= self.post_incident_frames:
-                self._finalize_incident()
+            if len(self.post_buffer) < self.post_frames:
+                self.post_buffer.append(frame.copy())
+                frames_remaining = self.post_frames - len(self.post_buffer)
+                if frames_remaining % self.fps == 0:  # Log every second
+                    console.print(f"[info]Recording: {frames_remaining//self.fps} seconds remaining")
                 
-    async def start_incident(self, 
-                           analysis_data: Dict[str, Any],
-                           violence_prob: float) -> Optional[str]:
-        """Start recording an incident if not in cooldown."""
-        if self.recording or self.frames_since_incident < self.cooldown_frames:
+                if len(self.post_buffer) >= self.post_frames:
+                    console.print("\n[stage3]╔════ RECORDING COMPLETE ════╗")
+                    console.print(f"[stage3]║ 15 Seconds Captured")
+                    console.print(f"[stage3]║ Processing Video...")
+                    console.print(f"[stage3]╚════════════════════════════╝\n")
+                    asyncio.create_task(self._finalize_recording())
+        else:
+            self.pre_buffer.append(frame.copy())
+    
+    async def start_incident(self, analysis_data: Dict[str, Any], violence_prob: float) -> Optional[str]:
+        if self.recording:
             return None
             
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         incident_id = f"incident_{timestamp}"
         
-        self.current_incident = IncidentReport(
-            incident_id=incident_id,
-            timestamp=timestamp,
-            threat_level=analysis_data.get('threat_level', 'UNKNOWN'),
-            violence_probability=violence_prob,
-            detected_objects=analysis_data.get('detected_objects', []),
-            video_path=os.path.join(self.video_dir, f"{incident_id}.mp4"),
-            analysis_data=analysis_data
-        )
+        console.print(f"\n[stage3]╔════ STARTING INCIDENT RECORDING ════╗")
+        console.print(f"[stage3]║ Recording 15 seconds total:")
+        console.print(f"[stage3]║ • 5 seconds pre-incident")
+        console.print(f"[stage3]║ • 10 seconds post-incident")
+        console.print(f"[stage3]╚═══════════════════════════════════════╝\n")
+        
+        self.current_incident = {
+            'incident_id': incident_id,
+            'timestamp': timestamp,
+            'violence_probability': violence_prob,
+            'analysis': analysis_data
+        }
         
         self.recording = True
-        self.post_incident_buffer = []
+        self.post_buffer = []
         return incident_id
-        
-    def _finalize_incident(self) -> None:
-        """Save incident video and data."""
-        if not self.current_incident:
-            return
-            
-        # Combine pre and post incident frames
-        all_frames = list(self.frame_buffer) + self.post_incident_buffer
-        
-        # Save video
-        if all_frames:
+
+    async def _finalize_recording(self) -> None:
+        """Compile video and upload via presigned URL."""
+        try:
+            if not self.current_incident:
+                console.print("[alert]No current incident to process")
+                return
+                
+            console.print("[info]Step 1: Preparing frames for processing...")
+            all_frames = list(self.pre_buffer) + self.post_buffer
             height, width = all_frames[0].shape[:2]
+            console.print(f"[info]Total frames to process: {len(all_frames)}")
+            
+            # STEP 2: Initialize video writer
+            console.print("[info]Step 2: Initializing video writer...")
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(
-                self.current_incident.video_path, 
-                fourcc, 
-                30, 
-                (width, height)
-            )
+            writer = cv2.VideoWriter('temp.mp4', fourcc, self.fps, (width, height))
             
-            for frame in all_frames:
-                out.write(frame)
-            out.release()
+            console.print("[info]Step 3: Writing frames to video file...")
+            for i, frame in enumerate(all_frames, start=1):
+                writer.write(frame)
+                if i % 30 == 0:  # Log every second worth of frames
+                    console.print(f"[info]Processed {i}/{len(all_frames)} frames")
+            writer.release()
+            console.print(f"[info]Video writer released after writing {len(all_frames)} frames")
             
-        # Save metadata
-        meta_path = os.path.join(
-            self.save_dir, 
-            f"{self.current_incident.incident_id}.json"
-        )
-        with open(meta_path, 'w') as f:
-            json.dump({
-                'incident_id': self.current_incident.incident_id,
-                'timestamp': self.current_incident.timestamp,
-                'threat_level': self.current_incident.threat_level,
-                'violence_probability': self.current_incident.violence_probability,
-                'detected_objects': self.current_incident.detected_objects,
-                'video_path': self.current_incident.video_path,
-                'analysis_data': self.current_incident.analysis_data
-            }, f, indent=2)
+            # STEP 4: Read video file into memory
+            console.print("[info]Step 4: Reading video file into memory...")
+            with open('temp.mp4', 'rb') as f:
+                video_bytes = f.read()
+            file_size_mb = len(video_bytes) / (1024 * 1024)
+            console.print(f"[info]Video file size: {file_size_mb:.2f} MB")
             
-        # Reset state
-        self.recording = False
-        self.frames_since_incident = 0
-        self.current_incident = None
-        self.post_incident_buffer = []
+            # Cleanup local file
+            console.print("[info]Step 5: Cleaning up temporary file...")
+            os.remove('temp.mp4')
+            
+            # STEP 6: Request a presigned URL from the Worker
+            console.print("[info]Step 6: Requesting presigned URL...")
+            incident_id = self.current_incident["incident_id"]
+            async with aiohttp.ClientSession() as session:
+                # Post JSON to /get-presigned-url
+                response = await session.post(
+                    self.presign_url_endpoint,
+                    json={"incidentId": incident_id}
+                )
+                if response.status != 200:
+                    console.print(f"[alert]Failed to retrieve presigned URL; status={response.status}")
+                    console.print(f"[alert]Response: {await response.text()}")
+                    return
+                
+                presign_data = await response.json()
+                upload_url = presign_data["uploadUrl"]
+                console.print(f"[info]Got presigned URL. Key = {presign_data['key']}")
+            
+            # STEP 7: PUT the video bytes directly to R2 using the presigned URL
+            console.print("[info]Step 7: Uploading file via presigned URL...")
+            async with aiohttp.ClientSession() as session:
+                put_headers = {
+                    "Content-Type": "video/mp4"
+                }
+                put_resp = await session.put(upload_url, data=video_bytes, headers=put_headers)
+                if put_resp.status != 200 and put_resp.status != 201:
+                    console.print(f"[alert]Presigned PUT failed; status={put_resp.status}")
+                    console.print(f"[alert]Response: {await put_resp.text()}")
+                else:
+                    console.print("[info]Upload successful via presigned URL!")
+            
+            # STEP 8: Cleanup
+            console.print("[info]Step 8: Final cleanup and state reset...")
+            self.recording = False
+            self.current_incident = None
+            self.post_buffer = []
+            console.print("[info]Recording process completed successfully!\n")
+            
+        except Exception as e:
+            console.print(f"[alert]Error during recording finalization: {str(e)}")
+            import traceback
+            console.print(f"[alert]{traceback.format_exc()}")
+            raise

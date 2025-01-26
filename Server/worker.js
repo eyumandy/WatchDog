@@ -1,103 +1,62 @@
-import { Ai } from '@cloudflare/ai';
+import {
+  S3RequestPresigner,
+  getSignedUrl,
+} from "@aws-sdk/s3-request-presigner"; 
+import {
+  S3Client,
+  PutObjectCommand,
+} from "@aws-sdk/client-s3";
 
 export default {
   async fetch(request, env) {
-    try {
-      if (request.method === 'OPTIONS') {
-        return corsResponse(null);
+    // We only handle POST /get-presigned-url
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/get-presigned-url") {
+      // 1. Parse JSON body, expecting: { incidentId: "incident_YYYYMMDD-HHMMSS" }
+      const data = await request.json().catch(() => null);
+      if (!data || !data.incidentId) {
+        return new Response("Missing incidentId in JSON body", { status: 400 });
       }
 
-      if (request.method !== 'POST') {
-        return corsResponse({ error: 'Method not allowed' }, 405);
-      }
-
-      const formData = await request.formData();
-      const imageBlob = formData.get('image');
-      const motionDataStr = formData.get('motion_data');
-
-      if (!imageBlob || !motionDataStr) {
-        return corsResponse({ 
-          error: 'Missing required data',
-          suspicious: false,
-          requires_attention: false
-        }, 400);
-      }
-
-      const motionData = JSON.parse(motionDataStr);
-      const ai = new Ai(env.AI);
-      const imageBytes = await imageBlob.arrayBuffer();
-
-      const [objectDetection, safetyCheck] = await Promise.all([
-        ai.run('@cf/microsoft/resnet-50', {
-          image: [...new Uint8Array(imageBytes)],
-        }),
-        ai.run('@cf/microsoft/dit-base', {
-          image: [...new Uint8Array(imageBytes)],
-        }),
-      ]);
-
-      const threatScore = calculateThreatScore(objectDetection, safetyCheck, motionData);
-
-      return corsResponse({
-        suspicious: threatScore > 0.5,
-        threat_score: threatScore,
-        detections: objectDetection,
-        requires_attention: false
+      // 2. Construct an S3Client that points to your R2 bucket
+      //    The "endpoint" is critical. It's your R2 public hostname, e.g. https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+      //    The region can be anything, but "auto" is often used for R2.
+      //    Provide accessKeyId/secretAccessKey from your environment (API tokens for R2).
+      const s3Client = new S3Client({
+        endpoint: env.MY_R2,
+        region: "auto",
+        endpoint: process.env.R2_ENDPOINT,
+          credentials: {
+            accessKeyId: env.R2_ACCESS_KEY_ID,
+            secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+          },
+        forcePathStyle: true, // R2 uses path-style
       });
 
-    } catch (error) {
-      console.error('Error:', error);
-      return corsResponse({
-        error: error.message,
-        suspicious: false,
-        requires_attention: false
-      }, 500);
+      // 3. Create a PutObjectCommand for the key incidents/<incidentId>.mp4
+      const key = `incidents/${data.incidentId}.mp4`;
+      const command = new PutObjectCommand({
+        Bucket: "watchdog-incident-reports", // your R2 bucket name
+        Key: key,
+      });
+
+      // 4. Generate a presigned URL that expires in e.g. 10 minutes (600 seconds)
+      //    So the client can do a direct PUT to that URL.
+      const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 600 });
+
+      // 5. Return JSON with the presigned URL
+      return new Response(
+        JSON.stringify({ 
+          uploadUrl: signedUrl,
+          key: key
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
     }
+
+    return new Response("Not Found", { status: 404 });
   },
 };
-
-function calculateThreatScore(objectDetection, safetyCheck, motionData) {
-  let score = 0;
-  
-  // Base motion score
-  const motionScore = Math.min(motionData.area / 15000, 0.4);
-  score += motionScore;
-
-  // Check for suspicious objects with confidence weighting
-  const suspiciousObjects = {
-    'knife': 0.3,
-    'gun': 0.4,
-    'weapon': 0.4,
-    'mask': 0.2,
-    'person': 0.1
-  };
-
-  objectDetection.objects?.forEach(obj => {
-    const label = obj.label?.toLowerCase();
-    if (suspiciousObjects[label]) {
-      score += suspiciousObjects[label] * obj.confidence;
-    }
-  });
-
-  // Factor in safety check scores
-  if (safetyCheck.violence > 0.6) score += 0.3;
-  if (safetyCheck.weapons > 0.5) score += 0.2;
-
-  // Cap final score at 1.0
-  return Math.min(score, 1.0);
-}
-
-function corsResponse(data, status = 200) {
-  return new Response(
-    JSON.stringify(data),
-    {
-      status,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      },
-    }
-  );
-}
