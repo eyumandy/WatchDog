@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { LogOut, Bell, ChevronDown } from "lucide-react"
+import { LogOut, Bell, ChevronDown, X } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
@@ -13,9 +13,11 @@ interface DashboardHeaderProps {
 
 export default function DashboardHeader({ activeTab, setActiveTab }: DashboardHeaderProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const [isNotificationDropdownOpen, setIsNotificationDropdownOpen] = useState(false)
   const router = useRouter()
   const dropdownRef = useRef<HTMLDivElement>(null)
-  const tabs = ["Dashboard", "Event Timeline", "Settings"]
+  const notificationDropdownRef = useRef<HTMLDivElement>(null)
+  const tabs = ["Dashboard", "Event Timeline", "Security Logs", "Settings"]
 
   const handleLogout = () => {
     console.log("Logout clicked") // Debug log
@@ -27,6 +29,9 @@ export default function DashboardHeader({ activeTab, setActiveTab }: DashboardHe
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsDropdownOpen(false)
+      }
+      if (notificationDropdownRef.current && !notificationDropdownRef.current.contains(event.target as Node)) {
+        setIsNotificationDropdownOpen(false)
       }
     }
 
@@ -58,9 +63,42 @@ export default function DashboardHeader({ activeTab, setActiveTab }: DashboardHe
             </ul>
           </nav>
           <div className="flex items-center space-x-4">
-            <button className="text-white/60 hover:text-white transition-colors p-2 rounded-full hover:bg-white/10">
-              <Bell size={20} />
-            </button>
+            <div className="relative" ref={notificationDropdownRef}>
+              <button
+                onClick={() => setIsNotificationDropdownOpen(!isNotificationDropdownOpen)}
+                className="text-white/60 hover:text-white transition-colors p-2 rounded-full hover:bg-white/10"
+                aria-label="Notifications"
+              >
+                <Bell size={20} />
+              </button>
+              <AnimatePresence>
+                {isNotificationDropdownOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute right-0 mt-2 w-64 bg-gray-900 rounded-md shadow-lg py-1 z-50 border border-white/10"
+                    style={{ top: "100%" }}
+                  >
+                    <div className="p-4 text-center bg-gray-900/70">
+                      <div className="flex justify-between items-center mb-2">
+                        <h3 className="text-sm font-medium text-white">Notifications</h3>
+                        <button
+                          onClick={() => setIsNotificationDropdownOpen(false)}
+                          className="text-white/60 hover:text-white transition-colors"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                      <div className="bg-white/5 rounded-md p-3">
+                        <p className="text-sm text-white/80">No new notifications</p>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
             <div className="relative" ref={dropdownRef}>
               <button
                 onClick={() => setIsDropdownOpen(!isDropdownOpen)}

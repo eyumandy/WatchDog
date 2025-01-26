@@ -10,7 +10,7 @@ interface NetworkBackgroundProps {
 }
 
 // Adjustable variables to match the image style
-const NODE_COUNT = 200
+const NODE_COUNT = 100
 const CONNECTION_DISTANCE = 200
 const NODE_RADIUS = 1
 const LINE_WIDTH = 0.6
