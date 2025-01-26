@@ -1,103 +1,178 @@
-# import numpy as np
+"""
+surveillance.py - Multi-stage security analysis system with AI-powered violence detection
+and incident reporting.
+"""
+
 import cv2
+import asyncio
+import aiohttp
 import os
-import shutil
+from dotenv import load_dotenv
+from datetime import datetime
+from motion_detection import MotionDetector, MotionConfig, MotionEvent
+from model_inference import ViolenceDetector
+from incident_handler import IncidentHandler
+import numpy as np
+from rich.console import Console
+from rich.theme import Theme
+from typing import Tuple, Optional
 
-# may need to use the side face detection as well
-# opens the video, and returns and error if it can't be opened/read
-# full body pictures
+load_dotenv()
 
-# add video input
-# take a face image and give it an id
-# api to find info about them
-# generative ai useage?
+console = Console(theme=Theme({
+    "stage1": "cyan bold",
+    "stage2": "yellow bold",
+    "stage3": "red bold",
+    "info": "blue",
+    "alert": "red bold",
+    "metric": "green"
+}))
 
-
-video = cv2.VideoCapture(0)
-
-frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-fps = video.get(cv2.CAP_PROP_FPS)
-mp4 = cv2.VideoWriter_fourcc(*"mp4v")
-out = cv2.VideoWriter("output.mp4", mp4, fps, (frame_width, frame_height))
-
-if (video.isOpened() == False):
-    print("Error: opening/reading video file")
-
-haarcasc_frontal = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-# haar_cascade_profile = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
-haarcasc_frontal_alt = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt.xml')
-haarcasc_frontal_alt2 = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml') 
-
-save_every = 10 # saves every tenth face
-frame_count = 1
-face_number = 1 # this is for the face file's name
-while True:
-    c=0
-    ret, frame = video.read()
-    
-    if not ret:
-        break
-    
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    # take multiple photos over the course of the video of the faces. At the end, check all the face pictures for 
-    # faces again and delete the ones without
-
-    frontal_faces = haarcasc_frontal.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=6, minSize=(30, 30))
-
-    # profile_faces = haar_cascade_profile.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=6, minSize=(30, 30))
-
-    # two seprate for loops so that they don't display at the same time
-    for (x, y, w, h) in frontal_faces:
-        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 3)
+class SurveillanceSystem:
+    def __init__(self, 
+                 worker_url: str,
+                 model_path: str,
+                 save_dir: str = "detected_events",
+                 motion_config: Optional[MotionConfig] = None,
+                 r2_config: Optional[dict] = None):
+        console.print("\n[info]═══════════════════════════════════════")
+        console.print("[info]    Surveillance System Initializing")
+        console.print("[info]═══════════════════════════════════════")
         
-        if frame_count % save_every == 0:
-            crop_img = cv2.resize(frame[y:y+h, x:x+w], dsize=(200,200)) # lowering the size could make it more effiecient if it is slow
+        self.motion_config = motion_config or MotionConfig(
+            min_area=5000,
+            learning_rate=0.5,
+            detection_threshold=1200,
+            temporal_window=1.5,
+            accumulation_threshold=250000,
+            decay_rate=0.95
+        )
+        
+        self.motion_detector = MotionDetector(self.motion_config)
+        self.violence_detector = ViolenceDetector(model_path)
+        self.worker_url = worker_url
+        self.save_dir = save_dir
+        self.session = None
+        
+        # Initialize incident handler with R2 config
+        self.incident_handler = IncidentHandler(
+            save_dir=save_dir,
+            r2_endpoint=r2_config['endpoint'],
+            access_key_id=r2_config['access_key_id'],
+            access_key_secret=r2_config['access_key_secret'],
+            bucket_name=r2_config['bucket_name']
+        )
+        
+        os.makedirs(save_dir, exist_ok=True)
+        
+    async def initialize(self):
+        self.session = aiohttp.ClientSession()
+        console.print("[info]► Network session initialized")
+        console.print("[info]═══════════════════════════════════════\n")
+
+    async def process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, bool]:
+        # Add frame to incident handler buffer
+        self.incident_handler.add_frame(frame)
+        
+        # If currently recording, just return the annotated frame
+        if self.incident_handler.recording:
+            return self._annotate_frame(frame, self.incident_handler.current_incident['violence_probability']), True
+
+        # Stage 1: Motion Detection
+        motion_event = self.motion_detector.detect(frame)
+        if not motion_event or not motion_event.threshold_exceeded:
+            return frame if not motion_event else self.motion_detector.draw_debug(frame, motion_event), False
+
+        # Stage 2: AI Analysis
+        console.print(f"\n[stage2]╔════ STAGE 2: AI MODEL ANALYSIS ════╗")
+        is_violent, violence_prob = self.violence_detector.predict(frame)
+        console.print(f"[stage2]║ Violence Probability: {violence_prob:.2f}")
+        
+        if not is_violent:
+            console.print(f"[stage2]╚════ Analysis Complete: No Further Action ════╝\n")
+            return self.motion_detector.draw_debug(frame, motion_event), False
+
+        # Stage 3: Incident Recording
+        if violence_prob > 0.7:
+            incident_id = await self.incident_handler.start_incident(
+                {
+                    'detected_activity': 'Violent behavior',
+                    'confidence': violence_prob,
+                    'motion_data': {
+                        'area': motion_event.area,
+                        'center': motion_event.center,
+                        'accumulated_motion': motion_event.accumulated_motion
+                    }
+                },
+                violence_prob
+            )
             
-            faceImgFilename = f"faces/face_{face_number}.jpg"
-            face_number+=1
-
-            cv2.imwrite(faceImgFilename, crop_img)
-
-    # for (x, y, w, h) in  profile_faces:
-    #     cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-
-    out.write(frame)
-    frame_count+=1
-    cv2.imshow('WatchDog', frame)
-    
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-
-model_path = 'models/deploy.prototxt'
-weights_path = 'models/res10_300x300_ssd_iter_140000.caffemodel'
-net = cv2.dnn.readNetFromCaffe(model_path, weights_path)
-
-saved_faces = os.listdir('faces')
-saved_faces.remove("false_positives") # so that there isn't an error when os deletes files
-
-for saved_face in saved_faces:
-    possible_face = cv2.imread(f"faces/{saved_face}")
-
-    blob = cv2.dnn.blobFromImage(possible_face, 1.0, (300, 300), (104.0, 177.0, 123.0), swapRB=False, crop=False)
-
-    net.setInput(blob)
-    detections = net.forward()
-
-    face_detected = False
-    for i in range(detections.shape[2]):
-        confidence = detections[0, 0, i, 2]
+            return self._annotate_frame(frame, violence_prob), True
+            
+        return self.motion_detector.draw_debug(frame, motion_event), False
         
-        if confidence > 0.5: 
-            face_detected = True
-            break
+    def _annotate_frame(self, frame: np.ndarray, violence_prob: float) -> np.ndarray:
+        annotated = frame.copy()
+        color = (0, 0, 255) if violence_prob > 0.7 else (0, 255, 255)
+        
+        cv2.putText(
+            annotated,
+            f"Violence Probability: {violence_prob:.2f}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            color,
+            2
+        )
+            
+        return annotated
 
-    if not face_detected:
-        print(f"False positive: {saved_face}")
-        shutil.move(f"faces/{saved_face}", f"faces/false_positives/{saved_face}")
+    async def cleanup(self):
+        if self.session:
+            await self.session.close()
 
-video.release()
-out.release
-cv2.destroyAllWindows()
+async def main():
+    config = {
+        'worker_url': os.getenv('CLOUDFLARE_WORKER_URL'),
+        'model_path': os.path.join(os.path.dirname(__file__), '../models/best_model.pth'),
+        'save_dir': os.getenv('SAVE_DIR', 'detected_events'),
+        'r2_config': {
+            'endpoint': os.getenv('R2_ENDPOINT'),
+            'access_key_id': os.getenv('R2_ACCESS_KEY_ID'),
+            'access_key_secret': os.getenv('R2_ACCESS_KEY_SECRET'),
+            'bucket_name': os.getenv('R2_BUCKET_NAME')
+        }
+    }
+    
+    system = SurveillanceSystem(**config)
+    await system.initialize()
+    
+    try:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            raise RuntimeError("Failed to open camera")
+            
+        console.print("[info]Camera initialized successfully")
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                console.print("[alert]Failed to read frame")
+                break
+                
+            processed_frame, suspicious = await system.process_frame(frame)
+            cv2.imshow('WatchDog Surveillance', processed_frame)
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+                
+    except Exception as e:
+        console.print(f"[alert]Error: {str(e)}")
+        
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        await system.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,0 +1,9 @@
+# Ignore service account credentials JSON file
+watchdog-448922-18cc0d7398a2.json
+
+# Ignore .env file
+../.env
+
+# Ignore system files
+.DS_Store
+Thumbs.db
