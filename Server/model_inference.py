@@ -128,7 +128,7 @@ class ViolenceDetector:
             print("Probabilities:", probabilities[0].cpu().numpy())  # shape [2] for 2 classes
 
             # Probability of 'violent' class (index 1)
-            violence_prob = probabilities[0][0].item()
+            violence_prob = probabilities[0][1].item()
             print("Violence Probability:", violence_prob)
 
             # Apply the custom sigmoid scaling

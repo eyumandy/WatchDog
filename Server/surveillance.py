@@ -1,14 +1,15 @@
 """
-surveillance.py - Multi-stage security analysis system with AI-powered violence detection
-and incident reporting.
+surveillance.py - Multi-stage security analysis system with AI-powered violence detection,
+incident reporting, and enhanced face detection with metadata storage.
 """
 
 import cv2
 import asyncio
 import aiohttp
 import os
-from dotenv import load_dotenv
+import json
 from datetime import datetime
+from dotenv import load_dotenv
 from motion_detection import MotionDetector, MotionConfig, MotionEvent
 from model_inference import ViolenceDetector
 from incident_handler import IncidentHandler
@@ -17,6 +18,7 @@ from rich.console import Console
 from rich.theme import Theme
 from typing import Tuple, Optional
 
+# Load environment variables
 load_dotenv()
 
 console = Console(theme=Theme({
@@ -38,7 +40,7 @@ class SurveillanceSystem:
         console.print("\n[info]═══════════════════════════════════════")
         console.print("[info]    Surveillance System Initializing")
         console.print("[info]═══════════════════════════════════════")
-        
+
         self.motion_config = motion_config or MotionConfig(
             min_area=5000,
             learning_rate=0.5,
@@ -47,13 +49,13 @@ class SurveillanceSystem:
             accumulation_threshold=250000,
             decay_rate=0.95
         )
-        
+
         self.motion_detector = MotionDetector(self.motion_config)
         self.violence_detector = ViolenceDetector(model_path)
         self.worker_url = worker_url
         self.save_dir = save_dir
         self.session = None
-        
+
         # Initialize incident handler with R2 config
         self.incident_handler = IncidentHandler(
             save_dir=save_dir,
@@ -62,9 +64,14 @@ class SurveillanceSystem:
             access_key_secret=r2_config['access_key_secret'],
             bucket_name=r2_config['bucket_name']
         )
-        
+
         os.makedirs(save_dir, exist_ok=True)
-        
+
+        # Load Haar Cascade for face detection
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        )
+
     async def initialize(self):
         self.session = aiohttp.ClientSession()
         console.print("[info]► Network session initialized")
@@ -73,7 +80,7 @@ class SurveillanceSystem:
     async def process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, bool]:
         # Add frame to incident handler buffer
         self.incident_handler.add_frame(frame)
-        
+
         # If currently recording, just return the annotated frame
         if self.incident_handler.recording:
             return self._annotate_frame(frame, self.incident_handler.current_incident['violence_probability']), True
@@ -87,7 +94,7 @@ class SurveillanceSystem:
         console.print(f"\n[stage2]╔════ STAGE 2: AI MODEL ANALYSIS ════╗")
         is_violent, violence_prob = self.violence_detector.predict(frame)
         console.print(f"[stage2]║ Violence Probability: {violence_prob:.2f}")
-        
+
         if not is_violent:
             console.print(f"[stage2]╚════ Analysis Complete: No Further Action ════╝\n")
             return self.motion_detector.draw_debug(frame, motion_event), False
@@ -106,15 +113,20 @@ class SurveillanceSystem:
                 },
                 violence_prob
             )
-            
+
+            # Capture face images
+            self._capture_faces(frame, incident_id)
             return self._annotate_frame(frame, violence_prob), True
-            
+
         return self.motion_detector.draw_debug(frame, motion_event), False
-        
+    
     def _annotate_frame(self, frame: np.ndarray, violence_prob: float) -> np.ndarray:
+        """
+        Annotate the frame with violence probability.
+        """
         annotated = frame.copy()
         color = (0, 0, 255) if violence_prob > 0.7 else (0, 255, 255)
-        
+
         cv2.putText(
             annotated,
             f"Violence Probability: {violence_prob:.2f}",
@@ -124,55 +136,89 @@ class SurveillanceSystem:
             color,
             2
         )
-            
+
         return annotated
-
-    async def cleanup(self):
-        if self.session:
-            await self.session.close()
-
-async def main():
-    config = {
-        'worker_url': os.getenv('CLOUDFLARE_WORKER_URL'),
-        'model_path': os.path.join(os.path.dirname(__file__), '../models/best_model.pth'),
-        'save_dir': os.getenv('SAVE_DIR', 'detected_events'),
-        'r2_config': {
-            'endpoint': os.getenv('R2_ENDPOINT'),
-            'access_key_id': os.getenv('R2_ACCESS_KEY_ID'),
-            'access_key_secret': os.getenv('R2_ACCESS_KEY_SECRET'),
-            'bucket_name': os.getenv('R2_BUCKET_NAME')
-        }
-    }
     
-    system = SurveillanceSystem(**config)
-    await system.initialize()
-    
-    try:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            raise RuntimeError("Failed to open camera")
-            
-        console.print("[info]Camera initialized successfully")
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                console.print("[alert]Failed to read frame")
-                break
-                
-            processed_frame, suspicious = await system.process_frame(frame)
-            cv2.imshow('WatchDog Surveillance', processed_frame)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-                
-    except Exception as e:
-        console.print(f"[alert]Error: {str(e)}")
-        
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-        await system.cleanup()
+    def _capture_faces(self, frame: np.ndarray, incident_id: str) -> None:
+        """
+        Detect faces in the given frame and save them to the incident folder.
+        """
+        incident_path = os.path.join(self.save_dir, incident_id)
+        faces_path = os.path.join(incident_path, 'faces')
+        os.makedirs(faces_path, exist_ok=True)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
+
+        console.print(f"[info]► Detected {len(faces)} faces in incident frame.")
+
+        for i, (x, y, w, h) in enumerate(faces):
+            face_img = frame[y:y+h, x:x+w]
+            face_filename = os.path.join(faces_path, f"face_{i + 1}.jpg")
+            cv2.imwrite(face_filename, face_img)
+
+    async def upload_to_r2(self, incident_id: str, video_path: str):
+        """
+        Upload video and metadata to R2 and store metadata in Cloudflare D1 SQL database.
+        """
+        try:
+            # Metadata
+            metadata = {
+                "incident_id": incident_id,
+                "upload_date": datetime.now().isoformat(),
+                "video_path": video_path
+            }
+
+            # Save metadata locally
+            metadata_path = os.path.join(self.save_dir, incident_id, 'metadata.json')
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=4)
+
+            # Upload to R2
+            console.print("[info]Uploading video and metadata to R2...")
+            await self.incident_handler.upload_video_and_metadata(video_path, metadata_path)
+
+            # Insert metadata into Cloudflare D1
+            await self.store_metadata_in_d1(metadata)
+
+        except Exception as e:
+            console.print(f"[alert]Error during upload: {str(e)}")
+
+    async def store_metadata_in_d1(self, metadata: dict):
+        """
+        Store metadata in Cloudflare D1 SQL database.
+        """
+        try:
+            query = """
+            INSERT INTO incidents (incident_id, upload_date, video_path)
+            VALUES (?, ?, ?);
+            """
+            payload = {
+                "sql": query,
+                "bindings": [
+                    {"name": "incident_id", "value": metadata["incident_id"]},
+                    {"name": "upload_date", "value": metadata["upload_date"]},
+                    {"name": "video_path", "value": metadata["video_path"]}
+                ]
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.worker_url,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {os.getenv('Token')}"}
+                ) as response:
+                    if response.status == 200:
+                        console.print("[info]Metadata successfully stored in D1 database.")
+                    else:
+                        console.print(f"[alert]Failed to store metadata in D1: {response.status}")
+                        console.print(await response.text())
+
+        except Exception as e:
+            console.print(f"[alert]Error while storing metadata in D1: {str(e)}")
+
+
+
+async def cleanup(self):
+    if self.session:
+        await self.session.close()

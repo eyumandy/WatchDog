@@ -49,25 +49,37 @@ def init_surveillance():
     return asyncio.run(surveillance_system.initialize())
 
 def process_camera():
-    """Run the camera and process frames."""
+    """Run the camera and process frames asynchronously."""
     global surveillance_system
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     cap.set(cv2.CAP_PROP_FPS, 30)
-    
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        # Process frame through SurveillanceSystem
-        if surveillance_system:
-            processed_frame, suspicious = asyncio.run(surveillance_system.process_frame(frame))
+
+    async def async_process_frame(frame):
+        """Asynchronously process a single frame."""
+        return await surveillance_system.process_frame(frame)
+
+    loop = asyncio.new_event_loop()  # Create a new event loop for async tasks
+    asyncio.set_event_loop(loop)
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Asynchronously process the frame
+            task = loop.create_task(async_process_frame(frame))
+            processed_frame, suspicious = loop.run_until_complete(task)
+
             if not frame_queue.full():
                 frame_queue.put(processed_frame)
 
-    cap.release()
+    finally:
+        cap.release()
+        loop.close()
+
 
 def generate_frames():
     """Generate frames for video feed."""
@@ -85,15 +97,6 @@ def video_feed():
     return Response(generate_frames(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
-@app.route('/cleanup', methods=['POST'])
-def cleanup():
-    """Clean up SurveillanceSystem."""
-    global surveillance_system
-    try:
-        asyncio.run(surveillance_system.cleanup())
-        return jsonify({'status': 'Surveillance system cleaned up'})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/incidents', methods=['GET'])
 def list_incidents():
@@ -126,7 +129,19 @@ def list_incidents():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
+@app.route('/cleanup', methods=['POST'])
+def cleanup():
+    """Clean up SurveillanceSystem."""
+    global surveillance_system
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(surveillance_system.cleanup())
+        loop.close()
+        return jsonify({'status': 'Surveillance system cleaned up'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
 if __name__ == '__main__':
     # Initialize surveillance system
     init_surveillance()
