@@ -1,139 +1,108 @@
-"use client"
+"use client";
 
-import { useState, useEffect, useMemo } from "react"
-import { AlertCircle, Video, Server, User, DoorClosed, Clock, Search, ChevronLeft, ChevronRight } from "lucide-react"
-import { format } from "date-fns"
+import { useState, useEffect, useMemo } from "react";
+import { AlertCircle, Video, Server, User, DoorClosed, Clock, Search, ChevronLeft, ChevronRight } from "lucide-react";
+import { format } from "date-fns";
+import axios from "axios";
 
 interface SecurityLog {
-  id: number
-  type: "alert" | "camera" | "system" | "user" | "door" | "schedule"
-  description: string
-  timestamp: string
-  severity: "low" | "medium" | "high"
-  location: string
-  involvedPersons: Array<{ name: string; imageUrl: string }>
-  additionalInfo?: string
+  id: string; // Unique incident ID
+  type: "alert" | "camera" | "system" | "user" | "door" | "schedule"; // Randomized log type
+  description: string; // Incident description
+  timestamp: string; // Time of the incident
+  location: string; // Placeholder for now
 }
 
 const getLogIcon = (type: SecurityLog["type"]) => {
   switch (type) {
     case "alert":
-      return <AlertCircle size={16} className="text-red-400" />
+      return <AlertCircle size={16} className="text-red-400" />;
     case "camera":
-      return <Video size={16} className="text-blue-400" />
+      return <Video size={16} className="text-blue-400" />;
     case "system":
-      return <Server size={16} className="text-green-400" />
+      return <Server size={16} className="text-green-400" />;
     case "user":
-      return <User size={16} className="text-purple-400" />
+      return <User size={16} className="text-purple-400" />;
     case "door":
-      return <DoorClosed size={16} className="text-yellow-400" />
+      return <DoorClosed size={16} className="text-yellow-400" />;
     case "schedule":
-      return <Clock size={16} className="text-indigo-400" />
+      return <Clock size={16} className="text-indigo-400" />;
+    default:
+      return <AlertCircle size={16} className="text-white/60" />;
   }
-}
+};
 
-const getSeverityColor = (severity: SecurityLog["severity"]) => {
-  switch (severity) {
-    case "high":
-      return "bg-red-500/20 text-red-400"
-    case "medium":
-      return "bg-yellow-500/20 text-yellow-400"
-    case "low":
-      return "bg-green-500/20 text-green-400"
-  }
-}
-
-export const securityLogs: SecurityLog[] = [
-  {
-    id: 1,
-    type: "alert",
-    description: "Unauthorized access attempt detected at main entrance",
-    timestamp: "2023-06-15T14:30:00Z",
-    severity: "high",
-    location: "Main Entrance",
-    involvedPersons: [{ name: "Unknown Person", imageUrl: "/placeholder.svg?height=50&width=50" }],
-    additionalInfo: "Facial recognition failed to identify the individual. Security team notified.",
-  },
-  {
-    id: 2,
-    type: "camera",
-    description: "Motion detected in restricted area after hours",
-    timestamp: "2023-06-15T22:15:00Z",
-    severity: "medium",
-    location: "Server Room",
-    involvedPersons: [{ name: "John Doe", imageUrl: "/placeholder.svg?height=50&width=50" }],
-    additionalInfo: "Employee identified. Investigating reason for after-hours access.",
-  },
-  {
-    id: 3,
-    type: "door",
-    description: "Multiple failed access attempts",
-    timestamp: "2023-06-16T09:45:00Z",
-    severity: "medium",
-    location: "R&D Department",
-    involvedPersons: [{ name: "Jane Smith", imageUrl: "/placeholder.svg?height=50&width=50" }],
-    additionalInfo: "Employee reported issues with access card. IT support notified.",
-  },
-  {
-    id: 4,
-    type: "system",
-    description: "Critical system update completed",
-    timestamp: "2023-06-16T03:00:00Z",
-    severity: "low",
-    location: "Central Server",
-    involvedPersons: [],
-    additionalInfo: "Automatic update process completed successfully. All systems operational.",
-  },
-  // Add more log entries to demonstrate pagination
-  ...Array.from({ length: 16 }, (_, i) => ({
-    id: i + 5,
-    type: ["alert", "camera", "system", "user", "door", "schedule"][
-      Math.floor(Math.random() * 6)
-    ] as SecurityLog["type"],
-    description: `Sample log entry ${i + 5}`,
-    timestamp: new Date(Date.now() - Math.random() * 86400000 * 7).toISOString(),
-    severity: ["low", "medium", "high"][Math.floor(Math.random() * 3)] as SecurityLog["severity"],
-    location: "Various Locations",
-    involvedPersons: [],
-  })),
-]
+const getRandomLogType = (): SecurityLog["type"] => {
+  const types: SecurityLog["type"][] = ["alert", "camera", "system", "user", "door", "schedule"];
+  return types[Math.floor(Math.random() * types.length)];
+};
 
 interface SecurityLogEntriesProps {
-  onSelectLog: (id: number) => void
+  onSelectLog: (id: string) => void;
 }
 
 export default function SecurityLogEntries({ onSelectLog }: SecurityLogEntriesProps) {
-  const [searchTerm, setSearchTerm] = useState("")
-  const [selectedLogId, setSelectedLogId] = useState<number | null>(null)
-  const [currentPage, setCurrentPage] = useState(1)
-  const logsPerPage = 5
+  const [logs, setLogs] = useState<SecurityLog[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const logsPerPage = 5;
 
+  // Fetch logs from the backend
+  const fetchLogs = async () => {
+    try {
+      const response = await axios.get("http://localhost:5000/incidents");
+      const incidents = response.data.incidents.map((incident: any) => ({
+        id: incident.incident_id,
+        type: getRandomLogType(), // Assign a random log type
+        description: `Incident: ${incident.incident_id}`, // Default description based on ID
+        timestamp: incident.upload_date,
+        location: "Various Locations", // Placeholder
+      }));
+      setLogs(incidents);
+    } catch (error) {
+      console.error("Error fetching logs:", error);
+    }
+  };
+
+  // Refresh logs every 15 seconds
+  useEffect(() => {
+    fetchLogs(); // Initial fetch
+    const interval = setInterval(() => {
+      console.log("Refreshing logs...");
+      fetchLogs();
+    }, 15000);
+
+    return () => clearInterval(interval); // Cleanup interval
+  }, []);
+
+  // Filter logs based on search term
   const filteredLogs = useMemo(() => {
-    return securityLogs.filter(
+    return logs.filter(
       (log) =>
         log.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        log.type.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        log.severity.toLowerCase().includes(searchTerm.toLowerCase()),
-    )
-  }, [searchTerm])
+        log.type.toLowerCase().includes(searchTerm.toLowerCase()),
+    );
+  }, [searchTerm, logs]);
 
+  // Reset to the first page when the search term changes
   useEffect(() => {
-    setCurrentPage(1)
-  }, [searchTerm])
+    setCurrentPage(1);
+  }, [searchTerm]);
 
-  const totalPages = Math.ceil(filteredLogs.length / logsPerPage)
-  const indexOfLastLog = currentPage * logsPerPage
-  const indexOfFirstLog = indexOfLastLog - logsPerPage
-  const currentLogs = filteredLogs.slice(indexOfFirstLog, indexOfLastLog)
+  const totalPages = Math.ceil(filteredLogs.length / logsPerPage);
+  const indexOfLastLog = currentPage * logsPerPage;
+  const indexOfFirstLog = indexOfLastLog - logsPerPage;
+  const currentLogs = filteredLogs.slice(indexOfFirstLog, indexOfLastLog);
 
-  const handleLogClick = (id: number) => {
-    setSelectedLogId(id)
-    onSelectLog(id)
-  }
+  const handleLogClick = (id: string) => {
+    setSelectedLogId(id);
+    onSelectLog(id);
+  };
 
   const handlePageChange = (pageNumber: number) => {
-    setCurrentPage(pageNumber)
-  }
+    setCurrentPage(pageNumber);
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -159,13 +128,10 @@ export default function SecurityLogEntries({ onSelectLog }: SecurityLogEntriesPr
             onClick={() => handleLogClick(log.id)}
           >
             <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center space-x-2">
-                {getLogIcon(log.type)}
-                <span className={`text-xs px-2 py-1 rounded-full ${getSeverityColor(log.severity)}`}>
-                  {log.severity}
-                </span>
-              </div>
-              <span className="text-xs text-white/60">{format(new Date(log.timestamp), "MMM d, HH:mm:ss")}</span>
+              <div className="flex items-center space-x-2">{getLogIcon(log.type)}</div>
+              <span className="text-xs text-white/60">
+                {format(new Date(log.timestamp), "MMM d, HH:mm:ss")}
+              </span>
             </div>
             <p className="text-sm text-white/80">{log.description}</p>
           </div>
@@ -191,6 +157,5 @@ export default function SecurityLogEntries({ onSelectLog }: SecurityLogEntriesPr
         </button>
       </div>
     </div>
-  )
+  );
 }
-

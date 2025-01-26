@@ -1,78 +1,85 @@
 /**
  * EventList Component
  *
- * This component displays a chronological list of security events.
- * Each event includes an icon, description, timestamp, and severity level.
+ * This component dynamically displays a chronological list of security events fetched from the backend.
+ * Each event includes an icon, description, and timestamp.
  *
  * Features:
  * - Event type indicators
- * - Severity level display
  * - Timestamp formatting
  * - Animated transitions
+ * - Automatic refresh every 15 seconds
  */
 
-"use client"
+"use client";
 
-import { motion } from "framer-motion"
-import { AlertCircle, Video, Server, User, DoorClosed, Clock } from "lucide-react"
-import { formatDistanceToNow } from "date-fns"
+import { useState, useEffect } from "react";
+import { motion } from "framer-motion";
+import { AlertCircle, Video, Server, User, DoorClosed, Clock } from "lucide-react";
+import axios from "axios";
+import { formatDistanceToNow } from "date-fns";
 
 interface Event {
-  id: number
-  type: "alert" | "camera" | "system" | "user" | "door" | "schedule"
-  description: string
-  timestamp: string
-  severity: "low" | "medium" | "high"
+  id: string; // Unique incident ID
+  description: string; // Incident description
+  timestamp: string; // Time the incident occurred
+  type: "alert" | "camera" | "system" | "user" | "door" | "schedule"; // Randomized event type for the icon
 }
 
 const getEventIcon = (type: Event["type"]) => {
   switch (type) {
     case "alert":
-      return <AlertCircle size={16} className="text-red-400" />
+      return <AlertCircle size={16} className="text-red-400" />;
     case "camera":
-      return <Video size={16} className="text-blue-400" />
+      return <Video size={16} className="text-blue-400" />;
     case "system":
-      return <Server size={16} className="text-green-400" />
+      return <Server size={16} className="text-green-400" />;
     case "user":
-      return <User size={16} className="text-purple-400" />
+      return <User size={16} className="text-purple-400" />;
     case "door":
-      return <DoorClosed size={16} className="text-yellow-400" />
+      return <DoorClosed size={16} className="text-yellow-400" />;
     case "schedule":
-      return <Clock size={16} className="text-indigo-400" />
+      return <Clock size={16} className="text-indigo-400" />;
+    default:
+      return <AlertCircle size={16} className="text-white/60" />;
   }
-}
+};
 
-const getSeverityColor = (severity: Event["severity"]) => {
-  switch (severity) {
-    case "high":
-      return "bg-red-500/20 text-red-400"
-    case "medium":
-      return "bg-yellow-500/20 text-yellow-400"
-    case "low":
-      return "bg-green-500/20 text-green-400"
-  }
-}
-
-const events: Event[] = [
-  {
-    id: 1,
-    type: "alert",
-    description: "Motion detected in Living Room",
-    timestamp: "2023-06-15T14:30:00Z",
-    severity: "high",
-  },
-  {
-    id: 2,
-    type: "system",
-    description: "Camera 2 went offline",
-    timestamp: "2023-06-15T15:45:00Z",
-    severity: "medium",
-  },
-  { id: 3, type: "camera", description: "Movement in Backyard", timestamp: "2023-06-15T16:20:00Z", severity: "low" },
-  { id: 4, type: "door", description: "Front door opened", timestamp: "2023-06-15T18:10:00Z", severity: "medium" },
-]
+const getRandomEventType = (): Event["type"] => {
+  const types: Event["type"][] = ["alert", "camera", "system", "user", "door", "schedule"];
+  return types[Math.floor(Math.random() * types.length)];
+};
 
 export default function EventList() {
+  const [events, setEvents] = useState<Event[]>([]);
+
+  // Fetch incidents from the backend
+  const fetchEvents = async () => {
+    try {
+      const response = await axios.get("http://localhost:5000/incidents");
+      const incidents = response.data.incidents.map((incident: any) => ({
+        id: incident.incident_id,
+        description: `${incident.incident_id}`, // Description derived from incident ID
+        timestamp: incident.upload_date,
+        type: getRandomEventType(), // Assign a random event type for the icon
+      }));
+      setEvents(incidents);
+    } catch (error) {
+      console.error("Error fetching events:", error);
+    }
+  };
+
+  // Fetch data initially and refresh every 15 seconds
+  useEffect(() => {
+    fetchEvents(); // Initial fetch
+    const interval = setInterval(() => {
+      console.log("Refreshing events...");
+      fetchEvents();
+    }, 15000);
+
+    return () => clearInterval(interval); // Cleanup interval on component unmount
+  }, []);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -95,10 +102,8 @@ export default function EventList() {
               {formatDistanceToNow(new Date(event.timestamp), { addSuffix: true })}
             </p>
           </div>
-          <span className={`text-xs px-2 py-1 rounded-full ${getSeverityColor(event.severity)}`}>{event.severity}</span>
         </motion.div>
       ))}
     </motion.div>
-  )
+  );
 }
-

@@ -10,9 +10,13 @@ import os
 from dotenv import load_dotenv
 import boto3
 from botocore.config import Config
+from rich.console import Console
+import json
+from flask import send_from_directory
 
 # Load environment variables
 load_dotenv()
+console = Console()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*", "allow_headers": ["Content-Type"]}})
@@ -80,7 +84,6 @@ def process_camera():
         cap.release()
         loop.close()
 
-
 def generate_frames():
     """Generate frames for video feed."""
     while True:
@@ -97,38 +100,114 @@ def video_feed():
     return Response(generate_frames(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    """
+    Serve static files such as videos and images from the detected_events directory.
+    """
+    incidents_dir = os.getenv('SAVE_DIR', 'detected_events')
+    file_path = os.path.join(incidents_dir, filename)
+
+    # Debugging log
+    console.print(f"[info] Static file requested: {file_path}")
+    console.print(f"[info] Checking file existence at: {file_path}")
+    if not os.path.exists(file_path):
+        console.print(f"[alert] File not found: {file_path}")
+        return jsonify({"error": "File not found"}), 404
+
+    return send_from_directory(incidents_dir, filename)
+
+@app.route('/incident/<incident_id>', methods=['GET'])
+def get_incident(incident_id):
+    """
+    Fetch metadata and resources (video, detected faces) for a specific incident.
+    """
+    incidents_dir = os.getenv('SAVE_DIR', 'detected_events')
+    incident_path = os.path.join(incidents_dir, incident_id)
+
+    # Ensure the requested incident directory exists
+    if not os.path.isdir(incident_path):
+        console.print(f"[alert] Incident directory not found: {incident_path}")
+        return jsonify({'error': 'Incident not found'}), 404
+
+    # Read metadata from metadata.json
+    metadata_path = os.path.join(incident_path, 'metadata.json')
+    if not os.path.exists(metadata_path):
+        console.print(f"[alert] Metadata file not found: {metadata_path}")
+        return jsonify({'error': 'Metadata not found'}), 404
+
+    # Load metadata into a Python dictionary
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+
+    # Construct URLs for video and detected faces
+    base_url = request.host_url.rstrip('/')  # Get the base URL (e.g., http://localhost:5000)
+    video_path = f"{base_url}/static/{incident_id}/video.mp4"
+    faces_path = os.path.join(incident_path, 'people')
+    faces = [
+        f"{base_url}/static/{incident_id}/people/{face}"
+        for face in os.listdir(faces_path)
+        if face.endswith(('.jpg', '.png'))
+    ] if os.path.exists(faces_path) else []
+
+    return jsonify({
+        'incident_id': metadata['incident_id'],
+        'upload_date': metadata['upload_date'],
+        'video_path': video_path,
+        'faces': faces
+    })
 
 @app.route('/incidents', methods=['GET'])
-def list_incidents():
-    """List all recorded incidents."""
+def get_incidents():
+    """
+    Retrieve a list of incidents from the `detected_events` folder.
+    Each incident includes its metadata, video path, and detected faces.
+    """
+    incidents_dir = os.getenv('SAVE_DIR', 'detected_events')
+    incidents = []
+
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=os.getenv('R2_BUCKET_NAME'),
-            Prefix='incidents/'
-        )
-        
-        incidents = []
-        for obj in response.get('Contents', []):
-            presigned_url = s3_client.generate_presigned_url(
-                'get_object',
-                Params={
-                    'Bucket': os.getenv('R2_BUCKET_NAME'),
-                    'Key': obj['Key']
-                },
-                ExpiresIn=3600  # URL valid for 1 hour
-            )
-            
+        # Loop through each incident folder
+        for incident_id in os.listdir(incidents_dir):
+            incident_path = os.path.join(incidents_dir, incident_id)
+
+            # Skip non-directories
+            if not os.path.isdir(incident_path):
+                continue
+
+            # Read metadata.json
+            metadata_path = os.path.join(incident_path, 'metadata.json')
+            if not os.path.exists(metadata_path):
+                continue
+
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+
+            # Get video path
+            video_path = os.path.join(incident_path, 'video.mp4')
+
+            # Get detected faces
+            faces_path = os.path.join(incident_path, 'people')
+            faces = []
+            if os.path.exists(faces_path):
+                faces = [
+                    os.path.join(faces_path, face)
+                    for face in os.listdir(faces_path) if face.endswith(('.jpg', '.png'))
+                ]
+
+            # Append incident data
             incidents.append({
-                'key': obj['Key'],
-                'size': obj['Size'],
-                'last_modified': obj['LastModified'].isoformat(),
-                'download_url': presigned_url
+                'incident_id': metadata['incident_id'],
+                'upload_date': metadata['upload_date'],
+                'video_path': f"/static/{incident_id}/video.mp4",
+                'faces': [f"/static/{incident_id}/people/{os.path.basename(face)}" for face in faces]
             })
-            
+
         return jsonify({'incidents': incidents})
-        
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        console.print(f"[alert]Error fetching incidents: {str(e)}")
+        return jsonify({'error': 'Failed to retrieve incidents'}), 500
+    
 @app.route('/cleanup', methods=['POST'])
 def cleanup():
     """Clean up SurveillanceSystem."""

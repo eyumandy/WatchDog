@@ -141,7 +141,10 @@ class IncidentHandler:
         
         faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
         console.print(f"[info]► Detected {len(faces)} faces in frame for Incident ID: {incident_id}")
-
+        
+        if len(faces) == 0:
+            return
+        
         for i, (x, y, w, h) in enumerate(faces, start=1):
             face_img = frame[y:y+h, x:x+w]
             face_filename = os.path.join(incident_path, f"person_{i}.jpg")
