@@ -1,9 +1,3 @@
-"""
-app.py
-Flask server implementation for WatchDog surveillance system.
-Handles video streaming, threat detection, incident reporting, and R2 storage.
-"""
-
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 import cv2
@@ -16,7 +10,6 @@ import os
 from dotenv import load_dotenv
 import boto3
 from botocore.config import Config
-from datetime import datetime, timedelta
 
 # Load environment variables
 load_dotenv()
@@ -25,9 +18,9 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*", "allow_headers": ["Content-Type"]}})
 
 # Global variables
-frame_queue = Queue(maxsize=10)
-latest_analysis = None
+frame_queue = Queue(maxsize=3)
 surveillance_system = None
+incident_lock = threading.Lock()  # Lock for concurrent incident handling
 
 # Initialize S3 client for R2
 s3_client = boto3.client('s3',
@@ -39,9 +32,8 @@ s3_client = boto3.client('s3',
 )
 
 def init_surveillance():
-    """Initialize surveillance system with configuration."""
+    """Initialize SurveillanceSystem."""
     global surveillance_system
-    
     config = {
         'worker_url': os.getenv('CLOUDFLARE_WORKER_URL'),
         'model_path': os.path.join(os.path.dirname(__file__), '../models/best_model.pth'),
@@ -53,89 +45,53 @@ def init_surveillance():
             'bucket_name': os.getenv('R2_BUCKET_NAME')
         }
     }
-    
     surveillance_system = SurveillanceSystem(**config)
     return asyncio.run(surveillance_system.initialize())
 
-# Separate queues for raw feed and analysis
-frame_queue = Queue(maxsize=3)  # Smaller queue for lower latency
-analysis_queue = Queue(maxsize=10)
-
 def process_camera():
+    """Run the camera and process frames."""
+    global surveillance_system
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     
-    # Set camera thread priority
-    try:
-        import psutil
-        process = psutil.Process()
-        process.nice(10)  # Higher priority
-    except:
-        pass
-
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-
-        # Fast path for video feed
-        if not frame_queue.full():
-            # Optimize frame for streaming
-            small_frame = cv2.resize(frame, (854, 480))
-            frame_queue.put(small_frame)
-            
-            
         
+        # Process frame through SurveillanceSystem
+        if surveillance_system:
+            processed_frame, suspicious = asyncio.run(surveillance_system.process_frame(frame))
+            if not frame_queue.full():
+                frame_queue.put(processed_frame)
+
     cap.release()
 
 def generate_frames():
+    """Generate frames for video feed."""
     while True:
         if not frame_queue.empty():
             frame = frame_queue.get()
-            
-            # Aggressive JPEG compression for faster streaming
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 70]
-            ret, buffer = cv2.imencode('.jpg', frame, encode_param)
-            
-            if ret:
-                yield (b'--frame\r\n'
-                      b'Content-Type: image/jpeg\r\n\r\n' + 
-                      buffer.tobytes() + b'\r\n')
+            _, buffer = cv2.imencode('.jpg', frame)
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' +
+                   buffer.tobytes() + b'\r\n')
 
 @app.route('/video_feed')
 def video_feed():
+    """Video feed route."""
     return Response(generate_frames(),
-                   mimetype='multipart/x-mixed-replace; boundary=frame')               
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
-@app.route('/get_presigned_url', methods=['POST'])
-def get_presigned_url():
-    """Generate presigned URL for R2 upload."""
+@app.route('/cleanup', methods=['POST'])
+def cleanup():
+    """Clean up SurveillanceSystem."""
+    global surveillance_system
     try:
-        data = request.get_json()
-        incident_id = data.get('incident_id')
-        
-        if not incident_id:
-            return jsonify({'error': 'Missing incident_id'}), 400
-            
-        # Generate presigned URL valid for 10 minutes
-        presigned_url = s3_client.generate_presigned_url(
-            'put_object',
-            Params={
-                'Bucket': os.getenv('R2_BUCKET_NAME'),
-                'Key': f'incidents/{incident_id}.mp4',
-                'ContentType': 'video/mp4'
-            },
-            ExpiresIn=600
-        )
-        
-        return jsonify({
-            'uploadUrl': presigned_url,
-            'key': f'incidents/{incident_id}.mp4'
-        })
-        
+        asyncio.run(surveillance_system.cleanup())
+        return jsonify({'status': 'Surveillance system cleaned up'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -150,7 +106,6 @@ def list_incidents():
         
         incidents = []
         for obj in response.get('Contents', []):
-            # Generate presigned GET URL for each incident
             presigned_url = s3_client.generate_presigned_url(
                 'get_object',
                 Params={
@@ -169,40 +124,6 @@ def list_incidents():
             
         return jsonify({'incidents': incidents})
         
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/incident/<incident_id>', methods=['GET'])
-def get_incident(incident_id):
-    """Get details and download URL for specific incident."""
-    try:
-        key = f'incidents/{incident_id}.mp4'
-        
-        # Check if object exists
-        s3_client.head_object(
-            Bucket=os.getenv('R2_BUCKET_NAME'),
-            Key=key
-        )
-        
-        # Generate presigned download URL
-        download_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={
-                'Bucket': os.getenv('R2_BUCKET_NAME'),
-                'Key': key
-            },
-            ExpiresIn=3600
-        )
-        
-        return jsonify({
-            'incident_id': incident_id,
-            'download_url': download_url
-        })
-        
-    except s3_client.exceptions.ClientError as e:
-        if e.response['Error']['Code'] == '404':
-            return jsonify({'error': 'Incident not found'}), 404
-        return jsonify({'error': str(e)}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
