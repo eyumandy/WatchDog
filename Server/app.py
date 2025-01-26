@@ -1,4 +1,4 @@
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_file, make_response
 from flask_cors import CORS
 import cv2
 import asyncio
@@ -13,6 +13,8 @@ from botocore.config import Config
 from rich.console import Console
 import json
 from flask import send_from_directory
+import mimetypes
+import re
 
 # Load environment variables
 load_dotenv()
@@ -117,45 +119,155 @@ def serve_static(filename):
 
     return send_from_directory(incidents_dir, filename)
 
+@app.route('/static/<path:incident_id>/<path:filename>')
+def serve_incident_file(incident_id, filename):
+    """
+    Serve static files (videos, images) from incident folders with proper streaming support.
+    """
+    incidents_dir = os.getenv('SAVE_DIR', 'detected_events')
+    file_path = os.path.join(incidents_dir, incident_id, filename)
+    
+    # Debug logging
+    print(f"Accessing file: {file_path}")
+    print(f"File exists: {os.path.exists(file_path)}")
+    
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        return {'error': 'File not found'}, 404
+
+    try:
+        # Get file size
+        file_size = os.path.getsize(file_path)
+        print(f"File size: {file_size} bytes")
+
+        # Handle range request
+        range_header = request.headers.get('Range', None)
+        print(f"Range header: {range_header}")
+
+        if range_header:
+            # Parse range header
+            byte1, byte2 = 0, None
+            match = re.search(r'(\d+)-(\d*)', range_header)
+            groups = match.groups()
+
+            if groups[0]: byte1 = int(groups[0])
+            if groups[1]: byte2 = int(groups[1])
+
+            if byte2 is None:
+                byte2 = file_size - 1
+
+            length = byte2 - byte1 + 1
+
+            def generate():
+                with open(file_path, 'rb') as f:
+                    f.seek(byte1)
+                    remaining = length
+                    while remaining:
+                        chunk_size = min(8192, remaining)  # Read in 8KB chunks
+                        data = f.read(chunk_size)
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+
+            response = Response(
+                generate(),
+                206,
+                mimetype='video/mp4',
+                direct_passthrough=True
+            )
+            response.headers.add('Content-Range', f'bytes {byte1}-{byte2}/{file_size}')
+            response.headers.add('Accept-Ranges', 'bytes')
+            response.headers.add('Content-Length', str(length))
+        else:
+            # Full file response
+            def generate():
+                with open(file_path, 'rb') as f:
+                    while True:
+                        chunk = f.read(8192)  # Read in 8KB chunks
+                        if not chunk:
+                            break
+                        yield chunk
+
+            response = Response(
+                generate(),
+                200,
+                mimetype='video/mp4',
+                direct_passthrough=True
+            )
+            response.headers.add('Content-Length', str(file_size))
+
+        # Add CORS headers
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Range, Content-Type')
+        response.headers.add('Accept-Ranges', 'bytes')
+        response.headers.add('Cache-Control', 'no-cache, no-store, must-revalidate')
+        
+        print("Response headers:", dict(response.headers))
+        return response
+
+    except Exception as e:
+        print(f"Error serving file: {str(e)}")
+        return {'error': str(e)}, 500
+
 @app.route('/incident/<incident_id>', methods=['GET'])
 def get_incident(incident_id):
     """
-    Fetch metadata and resources (video, detected faces) for a specific incident.
+    Fetch metadata and resources for a specific incident.
     """
     incidents_dir = os.getenv('SAVE_DIR', 'detected_events')
     incident_path = os.path.join(incidents_dir, incident_id)
 
+    # Debug print the paths
+    console.print(f"[info]Checking incident path: {incident_path}")
+
     # Ensure the requested incident directory exists
     if not os.path.isdir(incident_path):
-        console.print(f"[alert] Incident directory not found: {incident_path}")
+        console.print(f"[alert]Incident directory not found: {incident_path}")
         return jsonify({'error': 'Incident not found'}), 404
 
-    # Read metadata from metadata.json
-    metadata_path = os.path.join(incident_path, 'metadata.json')
-    if not os.path.exists(metadata_path):
-        console.print(f"[alert] Metadata file not found: {metadata_path}")
-        return jsonify({'error': 'Metadata not found'}), 404
+    try:
+        # Read metadata from metadata.json
+        metadata_path = os.path.join(incident_path, 'metadata.json')
+        if not os.path.exists(metadata_path):
+            console.print(f"[alert]Metadata file not found: {metadata_path}")
+            return jsonify({'error': 'Metadata not found'}), 404
 
-    # Load metadata into a Python dictionary
-    with open(metadata_path, 'r') as f:
-        metadata = json.load(f)
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
 
-    # Construct URLs for video and detected faces
-    base_url = request.host_url.rstrip('/')  # Get the base URL (e.g., http://localhost:5000)
-    video_path = f"{base_url}/static/{incident_id}/video.mp4"
-    faces_path = os.path.join(incident_path, 'people')
-    faces = [
-        f"{base_url}/static/{incident_id}/people/{face}"
-        for face in os.listdir(faces_path)
-        if face.endswith(('.jpg', '.png'))
-    ] if os.path.exists(faces_path) else []
+        # Construct URLs for video and face images
+        base_url = f"/static/{incident_id}"
+        faces_dir = os.path.join(incident_path, 'faces')  # Changed from 'people' to 'faces'
+        faces = []
+        
+        # Debug print
+        console.print(f"[info]Checking faces directory: {faces_dir}")
+        
+        if os.path.exists(faces_dir):
+            # Get list of face images
+            face_images = [f for f in os.listdir(faces_dir) 
+                         if f.endswith(('.jpg', '.png'))]
+            console.print(f"[info]Found face images: {face_images}")
+            
+            faces = [f"{base_url}/faces/{face}" for face in face_images]  # Changed path to use 'faces'
 
-    return jsonify({
-        'incident_id': metadata['incident_id'],
-        'upload_date': metadata['upload_date'],
-        'video_path': video_path,
-        'faces': faces
-    })
+        response_data = {
+            'incident_id': metadata['incident_id'],
+            'upload_date': metadata['upload_date'],
+            'video_path': f"{base_url}/video.mp4",
+            'faces': faces
+        }
+        
+        # Debug print the response
+        console.print(f"[info]Sending response: {response_data}")
+        
+        return jsonify(response_data)
+
+    except Exception as e:
+        console.print(f"[alert]Error processing incident: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/incidents', methods=['GET'])
 def get_incidents():

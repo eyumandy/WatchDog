@@ -5,6 +5,21 @@ import { AlertCircle, Video, Server, User, DoorClosed, Clock, Search, ChevronLef
 import { format } from "date-fns";
 import axios from "axios";
 
+export interface IncidentDetails {
+    incident_id: string;
+    upload_date: string;
+    video_path: string;
+    faces: string[];
+  }
+  
+  export interface SecurityVideoPlayerProps {
+    videoPath: string | null;
+  }
+  
+  export interface SecurityLogDetailsProps {
+    selectedLogId: string | null;
+  }
+  
 interface SecurityLog {
   id: string; // Unique incident ID
   type: "alert" | "camera" | "system" | "user" | "door" | "schedule"; // Randomized log type

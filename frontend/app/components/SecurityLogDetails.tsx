@@ -1,59 +1,81 @@
-"use client";
-
-import { useState, useEffect, useRef } from "react";
-import { motion } from "framer-motion";
-import Image from "next/image";
-import { format } from "date-fns";
-import axios from "axios";
-
-// Interface to define the structure of incident details
-interface SecurityLogDetailsProps {
-  selectedLogId: string | null; // ID of the selected log entry
-}
+import React, { useState, useEffect } from 'react';
+import { motion } from 'framer-motion';
+import { format } from 'date-fns';
+import axios from 'axios';
+import { AlertCircle } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface IncidentDetails {
-  incident_id: string; // Unique identifier for the incident
-  upload_date: string; // Timestamp of when the incident was uploaded
-  video_path: string;  // URL for the incident video
-  faces: string[];     // Array of URLs for detected face images
+  incident_id: string;
+  upload_date: string;
+  video_path: string;
+  faces: string[];
 }
 
-export default function SecurityLogDetails({ selectedLogId }: SecurityLogDetailsProps) {
+interface SecurityLogDetailsProps {
+  selectedLogId: string | null;
+}
+
+const SecurityLogDetails: React.FC<SecurityLogDetailsProps> = ({ selectedLogId }) => {
   const [incidentDetails, setIncidentDetails] = useState<IncidentDetails | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Fetch incident details whenever a new log is selected
   useEffect(() => {
-    if (!selectedLogId) {
-      setIncidentDetails(null); // Reset details if no log is selected
-      return;
-    }
-
     const fetchIncidentDetails = async () => {
+      if (!selectedLogId) {
+        setIncidentDetails(null);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+      
       try {
-        // Make API call to get incident details
         const response = await axios.get(`http://localhost:5000/incident/${selectedLogId}`);
-        setIncidentDetails(response.data); // Update state with incident details
+        setIncidentDetails(response.data);
       } catch (error) {
-        console.error("Error fetching incident details:", error);
+        setError('Failed to load incident details');
+      } finally {
+        setIsLoading(false);
       }
     };
 
     fetchIncidentDetails();
   }, [selectedLogId]);
 
-  // Fallback UI when no log is selected
-  if (!selectedLogId || !incidentDetails) {
+  if (!selectedLogId) {
     return (
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: 0.3 }}
-        className="flex items-center justify-center h-full"
-      >
+      <div className="flex items-center justify-center h-full">
         <p className="text-white/60">Select a log entry to view details</p>
-      </motion.div>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  if (!incidentDetails) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <p className="text-white/60">No details available</p>
+      </div>
     );
   }
 
@@ -66,6 +88,7 @@ export default function SecurityLogDetails({ selectedLogId }: SecurityLogDetails
       transition={{ duration: 0.3 }}
       className="space-y-6 h-full"
     >
+      {/* Header */}
       <div>
         <h2 className="text-2xl font-light">Incident Details</h2>
         <p className="text-white/80">Incident ID: {incidentDetails.incident_id}</p>
@@ -74,42 +97,48 @@ export default function SecurityLogDetails({ selectedLogId }: SecurityLogDetails
         </p>
       </div>
 
-      {/* Video and Faces Grid */}
+      {/* Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Video Player */}
-        <div className="relative bg-black rounded-lg overflow-hidden">
-          {/* Render the video if the path exists */}
-          {incidentDetails.video_path ? (
-            <video
-              ref={videoRef}
-              src={incidentDetails.video_path}
-              controls
-              className="w-full h-[300px] lg:h-full object-cover bg-black"
-            />
-          ) : (
-            <p className="text-white/60">Video not available for this incident.</p>
-          )}
+        {/* Video Section - Placeholder */}
+        <div className="bg-black/40 rounded-lg overflow-hidden aspect-video flex items-center justify-center">
+          <p className="text-white/60">Video loading has been temporarily disabled</p>
         </div>
 
         {/* Detected Faces */}
-        {incidentDetails.faces.length > 0 && (
-          <div className="bg-white/5 rounded-lg p-4 flex flex-col space-y-4">
-            <h3 className="text-lg font-medium">Detected Faces</h3>
-            <div className="grid grid-cols-3 gap-4">
+        <div className="bg-white/5 rounded-lg p-6 flex flex-col space-y-4">
+          <h3 className="text-lg font-medium flex items-center gap-2">
+            Detected Faces
+            <span className="text-sm font-normal text-white/60">
+              ({incidentDetails.faces.length} detected)
+            </span>
+          </h3>
+          
+          {incidentDetails.faces && incidentDetails.faces.length > 0 ? (
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {incidentDetails.faces.map((face, index) => (
-                <Image
-                  key={index}
-                  src={face}
-                  alt={`Face ${index + 1}`}
-                  width={100}
-                  height={100}
-                  className="rounded-lg object-cover bg-black"
-                />
+                <div key={face} className="flex flex-col space-y-2">
+                  <div className="aspect-square bg-black/40 rounded-lg overflow-hidden relative group">
+                    <img
+                      src={`http://localhost:5000${face}`}
+                      alt={`Person ${index + 1}`}
+                      className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+                      loading="lazy"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
+                  </div>
+                  <p className="text-sm text-white/80 text-center">Person {index + 1}</p>
+                </div>
               ))}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="flex items-center justify-center h-32">
+              <p className="text-white/60">No faces detected in this incident</p>
+            </div>
+          )}
+        </div>
       </div>
     </motion.div>
   );
-}
+};
+
+export default SecurityLogDetails;

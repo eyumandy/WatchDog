@@ -2,7 +2,7 @@
 watchdog-448922-18cc0d7398a2.json
 
 # Ignore .env file
-../.env
+/.env
 
 # Ignore system files
 .DS_Store
