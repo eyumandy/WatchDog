@@ -34,8 +34,8 @@ class MotionConfig:
     learning_rate: float = 0.5
     detection_threshold: int = 5000
     temporal_window: float = 1.0
-    accumulation_threshold: float = 10000
-    decay_rate: float = .95
+    accumulation_threshold: float = 5000
+    decay_rate: float = .90
 
 @dataclass
 class MotionEvent:

@@ -1,5 +1,5 @@
 """
-surveillance.py - Multi-stage security analysis system
+surveillance.py - Multi-stage security analysis system with AI-powered violence detection
 """
 
 import cv2
@@ -11,27 +11,52 @@ from dotenv import load_dotenv
 from datetime import datetime
 from motion_detection import MotionDetector, MotionConfig, MotionEvent
 from cloud_vision import CloudVisionAnalyzer, ThreatLevel, SecurityAnalysis
+from model_inference import ViolenceDetector
 import numpy as np
 from rich.console import Console
 from rich.theme import Theme
+from typing import Tuple, Optional, Dict, Any
 
 load_dotenv()
-# Initialize rich console
+
+# Initialize rich console with custom theme
 console = Console(theme=Theme({
     "stage1": "cyan bold",
     "stage2": "yellow bold",
     "stage3": "red bold",
     "info": "blue",
-    "alert": "red bold"
+    "alert": "red bold",
+    "metric": "green"
 }))
 
 class SurveillanceSystem:
+    """
+    Multi-stage surveillance system with motion detection, AI analysis, and threat assessment.
+    
+    Features:
+    - Motion detection with temporal analysis
+    - AI-powered violence detection
+    - Cloud-based object and activity recognition
+    - Multi-stage threat assessment pipeline
+    - Event recording and analysis
+    """
+    
     def __init__(self, 
                  credentials_path: str,
                  worker_url: str,
+                 model_path: str,
                  save_dir: str = "detected_events",
-                 motion_config: MotionConfig = None):
-        """Initialize surveillance system components."""
+                 motion_config: Optional[MotionConfig] = None):
+        """
+        Initialize surveillance system components.
+        
+        Args:
+            credentials_path: Path to Google Cloud credentials
+            worker_url: Cloudflare worker endpoint URL
+            model_path: Path to fine-tuned ResNet model
+            save_dir: Directory to save detected events
+            motion_config: Optional motion detection configuration
+        """
         console.print("\n[info]═══════════════════════════════════════")
         console.print("[info]    Surveillance System Initializing")
         console.print("[info]═══════════════════════════════════════")
@@ -42,25 +67,42 @@ class SurveillanceSystem:
             learning_rate=0.5,
             detection_threshold=1200,
             temporal_window=1.5,
-            accumulation_threshold= 250000,
+            accumulation_threshold=250000,
             decay_rate=0.95
         )
         
+        # Initialize components
         self.motion_detector = MotionDetector(self.motion_config)
         self.cloud_analyzer = CloudVisionAnalyzer(credentials_path)
+        self.violence_detector = ViolenceDetector(model_path)
+        
+        # System configuration
         self.worker_url = worker_url
         self.save_dir = save_dir
         self.frame_buffer = []
-        self.buffer_size = 30
+        self.buffer_size = 30  # ~1 second at 30fps
         self.session = None
         
+        # Ensure save directory exists
+        os.makedirs(save_dir, exist_ok=True)
+        
     async def initialize(self):
+        """Initialize network session and other async components."""
         self.session = aiohttp.ClientSession()
         console.print("[info]► Network session initialized")
         console.print("[info]═══════════════════════════════════════\n")
 
-    async def process_frame(self, frame: np.ndarray) -> tuple[np.ndarray, bool]:
-        # Update frame buffer
+    async def process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, bool]:
+        """
+        Process a single frame through all analysis stages.
+        
+        Args:
+            frame: Input video frame
+            
+        Returns:
+            Tuple of (processed_frame, is_suspicious)
+        """
+        # Update frame buffer for event recording
         self.frame_buffer.append(frame.copy())
         if len(self.frame_buffer) > self.buffer_size:
             self.frame_buffer.pop(0)
@@ -73,19 +115,18 @@ class SurveillanceSystem:
         if not motion_event.threshold_exceeded:
             return self.motion_detector.draw_debug(frame, motion_event), False
 
-        console.print(f"\n[stage2]╔════ STAGE 2: INITIATING CLOUDFLARE ANALYSIS ════╗")
+        # Stage 2: AI Analysis
+        console.print(f"\n[stage2]╔════ STAGE 2: AI MODEL ANALYSIS ════╗")
         
-        # Stage 2: Cloudflare Worker Analysis
-        worker_result = await self._analyze_with_worker(frame, motion_event)
-        threat_score = worker_result.get('threat_score', 0)
+        # Violence Detection
+        is_violent, violence_prob = self.violence_detector.predict(frame)
+        console.print(f"[stage2]║ Violence Probability: {violence_prob:.2f}")
         
-        console.print(f"[stage2]║ Threat Score: {threat_score:.2f}")
-        if not worker_result.get('suspicious', False):
-            console.print(f"[stage2]╚════ Analysis Complete: No Further Action ════╝\n")
-            return self.motion_detector.draw_debug(frame, motion_event), False
+        if is_violent:
+            console.print(f"[alert]║ ⚠️  Violence Detected!")
 
-        # Stage 3: Full Cloud Vision Analysis
-        if threat_score > 0.7:
+        # Stage 3: Deep Analysis
+        if violence_prob > 0.7:
             console.print(f"\n[stage3]╔════ STAGE 3: DEEP ANALYSIS REQUIRED ════╗")
             analysis = await self.cloud_analyzer.analyze_frame(frame)
             
@@ -94,16 +135,16 @@ class SurveillanceSystem:
             console.print(f"[stage3]║ Violence Likelihood: {analysis.violence_likelihood}")
             
             if analysis.threat_level != ThreatLevel.SAFE:
-                await self._save_event(analysis)
+                await self._save_event(analysis, is_violent, violence_prob)
                 console.print(f"[alert]║ ⚠️  Security Alert: Potential Threat Detected")
                 console.print(f"[stage3]╚════ Event Recorded and Saved ════╝\n")
-                return self._annotate_frame(frame, analysis), True
+                return self._annotate_frame(frame, analysis, violence_prob), True
             
             console.print(f"[stage3]╚════ Deep Analysis Complete: No Threat ════╝\n")
                 
         return self.motion_detector.draw_debug(frame, motion_event), False
         
-    async def _analyze_with_worker(self, frame: np.ndarray, motion: MotionEvent) -> dict:
+    async def _analyze_with_worker(self, frame: np.ndarray, motion: MotionEvent) -> Dict[str, Any]:
         """Send frame to Cloudflare worker for initial analysis."""
         success, buffer = cv2.imencode('.jpg', frame)
         image_bytes = buffer.tobytes()
@@ -116,7 +157,8 @@ class SurveillanceSystem:
         
         motion_data = {
             'area': motion.area,
-            'center': motion.center
+            'center': motion.center,
+            'accumulated_motion': motion.accumulated_motion
         }
         data.add_field('motion_data', 
                       json.dumps(motion_data),
@@ -125,7 +167,10 @@ class SurveillanceSystem:
         async with self.session.post(self.worker_url, data=data) as response:
             return await response.json()
             
-    async def _save_event(self, analysis: SecurityAnalysis):
+    async def _save_event(self, 
+                         analysis: SecurityAnalysis,
+                         is_violent: bool,
+                         violence_prob: float):
         """Save event information and video clip."""
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         
@@ -147,10 +192,17 @@ class SurveillanceSystem:
                 'detected_objects': analysis.detected_objects,
                 'violence_likelihood': analysis.violence_likelihood,
                 'weapon_likelihood': analysis.weapon_likelihood,
+                'ai_violence_detection': {
+                    'is_violent': is_violent,
+                    'confidence': violence_prob
+                },
                 'timestamp': timestamp
             }, f, indent=2)
             
-    def _annotate_frame(self, frame: np.ndarray, analysis: SecurityAnalysis) -> np.ndarray:
+    def _annotate_frame(self, 
+                       frame: np.ndarray, 
+                       analysis: SecurityAnalysis,
+                       violence_prob: float) -> np.ndarray:
         """Add analysis visualization to frame."""
         annotated = frame.copy()
         
@@ -161,6 +213,7 @@ class SurveillanceSystem:
             ThreatLevel.DANGEROUS: (0, 0, 255)
         }[analysis.threat_level]
         
+        # Add threat information
         cv2.putText(
             annotated,
             f"Threat Level: {analysis.threat_level.name}",
@@ -171,8 +224,18 @@ class SurveillanceSystem:
             2
         )
         
+        cv2.putText(
+            annotated,
+            f"Violence Prob: {violence_prob:.2f}",
+            (10, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 0, 255) if violence_prob > 0.7 else (0, 255, 0),
+            2
+        )
+        
         # List detected objects
-        y_pos = 70
+        y_pos = 100
         for obj in analysis.detected_objects[:5]:  # Show top 5 objects
             cv2.putText(
                 annotated,
@@ -187,12 +250,18 @@ class SurveillanceSystem:
             
         return annotated
 
+    async def cleanup(self):
+        """Cleanup resources."""
+        if self.session:
+            await self.session.close()
+
 async def main():
     """Main execution function."""
     # Load configuration
     config = {
         'credentials_path': os.getenv('GOOGLE_APPLICATION_CREDENTIALS'),
         'worker_url': os.getenv('CLOUDFLARE_WORKER_URL'),
+        'model_path': 'C:/Users/eyuma/OneDrive/Desktop/WatchDog/models/best_model.pth',
         'save_dir': os.getenv('SAVE_DIR', 'detected_events')
     }
     
@@ -202,10 +271,15 @@ async def main():
     
     try:
         cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            raise RuntimeError("Failed to open camera")
+            
+        console.print("[info]Camera initialized successfully")
         
         while True:
             ret, frame = cap.read()
             if not ret:
+                console.print("[alert]Failed to read frame")
                 break
                 
             processed_frame, suspicious = await system.process_frame(frame)
@@ -214,6 +288,9 @@ async def main():
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
                 
+    except Exception as e:
+        console.print(f"[alert]Error: {str(e)}")
+        
     finally:
         cap.release()
         cv2.destroyAllWindows()
