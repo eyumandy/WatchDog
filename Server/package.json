@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@cloudflare/ai": "^1.2.2",
+    "base64-js": "^1.5.1",
+    "mustache": "^4.2.0",
+    "rich": "^0.0.0"
+  }
+}

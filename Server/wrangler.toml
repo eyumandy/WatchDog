@@ -1,0 +1,21 @@
+name = "watchdog"
+main = "worker.js"
+compatibility_date = "2024-01-25"
+
+[ai]
+binding = "AI"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "watchdog-db"
+database_id = "a1c45883-36c7-44d8-bc50-a6d375bc2ca5"
+
+[vars]
+GOOGLE_CLOUD_TOKEN = "watchdog-448922-18cc0d7398a2.json"
+
+[observability.logs]
+enabled = true
+
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "security_events"
