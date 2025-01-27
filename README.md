@@ -2,6 +2,7 @@ Watchdog - AI-Powered Security Surveillance System
 
 Overview
 Watchdog is an advanced security surveillance system that combines real-time video analysis, AI-powered violence detection, and automated incident reporting. The system uses a multi-stage detection approach to identify and document security incidents while minimizing false positives.
+
 🚀 Key Features
 
 Real-time motion detection with temporal accumulation
