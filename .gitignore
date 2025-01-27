@@ -1,9 +1,76 @@
-# Ignore everything in the data folder
-/data/
-/server/detected_events/
-/facelabel/
-/face_finding/
+# Environment files
+.env
+*.env.local
+*.env.development
+*.env.production
 
-# Ignore everything in the models folder
-/models/
-/.env
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.python-version
+.pytest_cache/
+
+# Logs and media files
+*.log
+detected_events/**/video.mp4
+detected_events/**/faces/
+detected_events/**/metadata.json
+
+# Node
+node_modules/
+.npm
+.next/
+dist/
+build/
+.cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Credentials and keys
+watchdog-*.json
+*.pem
+*.key
+*.crt
+
+# Model Files
+models/*.caffemodel
+models/*.prototxt
+models/*.xml
+
+# Misc Files
+package-lock.json
+yarn.lock
+
+# Testing
+coverage/
+.coverage
+htmlcov/
+
+# Build artifacts
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+*.swp
+*.swo
+
+# Local development settings
+.localdev
+.dev-settings
