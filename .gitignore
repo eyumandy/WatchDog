@@ -1,5 +1,8 @@
 # Ignore everything in the data folder
 /data/
+/server/detected_events/
+/facelabel/
+/face_finding/
 
 # Ignore everything in the models folder
 /models/
